@@ -1,0 +1,268 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+#
+# Copyright (c) 2023 QuickVM, LLC <foss@quickvm.com> All Rights Reserved.
+
+set -e
+set -x
+
+: ${STEPPATH:=$HOME/.step}
+BROWSER_CERT_DIR="${STEPPATH}/certs"
+
+USERNAME=$(id -un)
+GROUPNAME=$(id -gn)
+
+if [[ ! "${STEPPATH}" || ! -d "${STEPPATH}" ]]; then
+  echo "Could not create ${STEPPATH} directory!"
+  exit 1
+fi
+
+if [[ ! "${BROWSER_CERT_DIR}" || ! -d "${BROWSER_CERT_DIR}" ]]; then
+  echo "Could not create ${BROWSER_CERT_DIR} directory!"
+  exit 1
+fi
+
+export STEPPATH
+
+confirm() {
+  read -r -p "${1:-Confirm? [y/N]} " RESPONSE
+  case "${RESPONSE}" in
+      [yY][eE][sS]|[yY])
+          true
+          ;;
+      *)
+          false
+          ;;
+  esac
+}
+
+check_context() {
+  if step context current >/dev/null 2>&1; then
+    BROWSER_CONTEXT=$(step context current)
+    mkdir -p ${BROWSER_CERT_DIR}/contexts/${BROWSER_CONTEXT}
+    BROWSER_CONFIG_DIR=${BROWSER_CERT_DIR}/contexts/${BROWSER_CONTEXT}
+    BROWSER_CONFIG_FILE=${BROWSER_CERT_DIR}/contexts/${BROWSER_CONTEXT}/config.yml
+    BROWSER_USE_CONTEXT=true
+  else
+    BROWSER_CONFIG_DIR=${STEPPATH}/config
+    BROWSER_CONFIG_FILE=${BROWSER_CERT_DIR}/config.yml
+  fi
+}
+
+check_config() {
+  if [ ! -f ${BROWSER_CONFIG_FILE} ]; then
+    echo "Config file ${BROWSER_CONFIG_FILE} not found! Configuring..."
+    create_config
+  else
+    if [ ${IS_CONFIGURE} ]; then
+      echo "Config file ${BROWSER_CONFIG_FILE} found! Do you want to reconfigure?"
+      confirm
+      create_config
+    fi
+  fi
+}
+
+create_config() {
+  while [[ ! "$EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,4}$ ]];
+    do
+      read -p "Enter email address: " EMAIL
+      if [[ "$EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,4}$ ]]
+      then
+          local EMAIL=${EMAIL}
+          break
+      else
+          echo "Email address $EMAIL is invalid."
+      fi
+  done
+  while [[ ! $(step ca provisioner list | jq --arg PROVISIONER ${PROVISIONER} -rM '.[] |select(.name == $PROVISIONER).type') == "OIDC" ]];
+    do
+      read -p "OIDC Provisioner name: " PROVISIONER
+      if [[ $(step ca provisioner list | jq --arg PROVISIONER ${PROVISIONER} -rM '.[] |select(.name == $PROVISIONER).type') == "OIDC" ]]
+      then
+        local PROVISIONER=${PROVISIONER}
+        break
+      else
+       echo "You must use an OIDC Provisioner!"
+      fi
+  done
+  local MIN_TLS_DURATION=$(step ca provisioner list | jq --arg PROVISIONER ${PROVISIONER} -rM '.[] |select(.name == $PROVISIONER).claims.minTLSCertDuration')
+  local MAX_TLS_DURATION=$(step ca provisioner list | jq --arg PROVISIONER ${PROVISIONER} -rM '.[] |select(.name == $PROVISIONER).claims.maxTLSCertDuration')
+  local DEFAULT_TLS_DURATION=$(step ca provisioner list | jq --arg PROVISIONER ${PROVISIONER} -rM '.[] |select(.name == $PROVISIONER).claims.defaultTLSCertDuration')
+  echo "Cert duration? (2h30m20s format -- min: ${MIN_TLS_DURATION} max: ${MAX_TLS_DURATION})"
+  read -p "Duration [enter for default: ${DEFAULT_TLS_DURATION}]: " DURATION
+  local DURATION=${DURATION:-${DEFAULT_TLS_DURATION}}
+  echo
+  echo "Write:"
+  echo
+  EMAIL=${EMAIL} PROVISIONER=${PROVISIONER} DURATION=${DURATION} yq -n '.email = env(EMAIL) | .provisioner = env(PROVISIONER) | .duration = env(DURATION)'
+  echo "to ${BROWSER_CONFIG_FILE}?"
+  echo
+  confirm
+  EMAIL=${EMAIL} PROVISIONER=${PROVISIONER} DURATION=${DURATION} yq -n '.email = env(EMAIL) | .provisioner = env(PROVISIONER) | .duration = env(DURATION)' > ${BROWSER_CONFIG_FILE}
+  echo "${BROWSER_CONFIG_FILE} written!"
+  echo
+}
+
+generate_config() {
+
+  if step context current >/dev/null 2>&1; then
+    BROWSER_CONTEXT=$(step context current)
+
+    BROWSER_EMAIL=$(yq .email ${BROWSER_CONFIG_FILE})
+    BROWSER_CA_PROVISIONER=$(yq .provisioner ${BROWSER_CONFIG_FILE})
+    BROWSER_CRT_DURATION=$(yq .duration ${BROWSER_CONFIG_FILE})
+
+    BROWSER_CA_FILE="${BROWSER_CERT_DIR}/contexts/${BROWSER_CONTEXT}/root_ca.crt"
+    BROWSER_CRT_FILE="${BROWSER_CERT_DIR}/contexts/${BROWSER_CONTEXT}/${USERNAME}.crt"
+    BROWSER_KEY_FILE="${BROWSER_CERT_DIR}/contexts/${BROWSER_CONTEXT}/${USERNAME}.key"
+    BROWSER_PKCS12_FILE="${BROWSER_CERT_DIR}/contexts/${BROWSER_CONTEXT}/${USERNAME}.p12"
+    BROWSER_FILE_OWNER=${USERNAME}
+    BROWSER_FILE_GROUP=${GROUPNAME}
+    BROWSER_FILE_MODE=0600
+    BROWSER_CRT_SUBJECT=${USERNAME}
+    BROWSER_SANS="--san ${BROWSER_EMAIL} --san localhost --san 127.0.0.1 --san ${HOSTNAME}"
+    BROWSER_CA_FINGERPRINT=$(jq -r '.fingerprint' $(step path --base)/authorities/$(step context current)/config/defaults.json)
+    BROWSER_CA_URL=$(jq -r '."ca-url"' $(step path --base)/authorities/$(step context current)/config/defaults.json)
+  else
+    BROWSER_EMAIL=$(yq .email ${BROWSER_CONFIG_FILE})
+    BROWSER_CA_PROVISIONER=$(yq .provisioner ${BROWSER_CONFIG_FILE})
+    BROWSER_CRT_DURATION=$(yq .duration ${BROWSER_CONFIG_FILE})
+
+    BROWSER_CA_FILE="${BROWSER_CERT_DIR}/root_ca.crt"
+    BROWSER_CRT_FILE="${BROWSER_CERT_DIR}/${USERNAME}.crt"
+    BROWSER_KEY_FILE="${BROWSER_CERT_DIR}/${USERNAME}.key"
+    BROWSER_PKCS12_FILE="${BROWSER_CERT_DIR}/${USERNAME}.p12"
+    BROWSER_FILE_OWNER=${USERNAME}
+    BROWSER_FILE_GROUP=${GROUPNAME}
+    BROWSER_FILE_MODE=0600
+    BROWSER_CRT_SUBJECT=${USERNAME}
+    BROWSER_SANS="--san ${BROWSER_EMAIL} --san localhost --san 127.0.0.1 --san ${HOSTNAME}"
+    BROWSER_CA_FINGERPRINT=$(jq -r '.fingerprint' $(step path --base)/config/defaults.json)
+    BROWSER_CA_URL=$(jq -r '."ca-url"' $(step path --base)/config/defaults.json)
+  fi
+
+}
+
+export_config() {
+
+  cat << EOF > ${BROWSER_CERT_DIR}/cert_file_vars
+BROWSER_CA_FILE=${BROWSER_CA_FILE}
+BROWSER_CRT_FILE=${BROWSER_CRT_FILE}
+BROWSER_KEY_FILE=${BROWSER_KEY_FILE}
+EOF
+  echo ${BROWSER_CERT_DIR}/cert_file_vars
+}
+
+
+login() {
+  check_config
+  generate_config
+
+  local EXITCODE=0
+  step certificate needs-renewal ${BROWSER_CRT_FILE} --expires-in 0s >/dev/null 2>&1 || EXITCODE=$?
+
+  if [ "${EXITCODE}" -ne 1 ]; then
+    echo ${BROWSER_USE_CONTEXT}
+    if [ ${BROWSER_USE_CONTEXT} ]; then
+      step ca root ${BROWSER_CA_FILE} --force --context ${BROWSER_CONTEXT} >/dev/null 2>&1
+      step ca certificate ${BROWSER_CRT_SUBJECT} \
+        ${BROWSER_CRT_FILE} \
+        ${BROWSER_KEY_FILE} \
+        ${BROWSER_SANS} \
+        --provisioner ${BROWSER_CA_PROVISIONER} \
+        --not-after ${BROWSER_CRT_DURATION} \
+        --force \
+        --context ${BROWSER_CONTEXT} >/dev/null 2>&1
+    else
+      step ca certificate ${BROWSER_CRT_SUBJECT} \
+        ${BROWSER_CRT_FILE} \
+        ${BROWSER_KEY_FILE} \
+        ${BROWSER_SANS} \
+        --provisioner ${BROWSER_CA_PROVISIONER} \
+        --not-after ${BROWSER_CRT_DURATION} \
+        --force >/dev/null 2>&1
+    fi
+
+    chown ${BROWSER_FILE_OWNER}:${BROWSER_FILE_GROUP} ${BROWSER_CA_FILE} ${BROWSER_CRT_FILE} ${BROWSER_KEY_FILE}
+    chmod ${BROWSER_FILE_MODE} ${BROWSER_CA_FILE} ${BROWSER_CRT_FILE} ${BROWSER_KEY_FILE}
+    step certificate p12 --force --no-password --insecure ${BROWSER_PKCS12_FILE} ${BROWSER_CRT_FILE} ${BROWSER_KEY_FILE} >/dev/null 2>&1
+
+    export TSS2_LOG=all+NONE,fapi+NONE
+    # Import cert and key into Chrome
+    certutil -F -d sql:$HOME/.pki/nssdb -n $BROWSER_CRT_SUBJECT  >/dev/null 2>&1 ||:
+    pk12util -i ${BROWSER_PKCS12_FILE} -d sql:$HOME/.pki/nssdb -W '' >/dev/null 2>&1
+
+    # Import cert and key into all Firefox profiles
+    for PROFILE_DIRS in $(find  ${HOME}/.mozilla* ${HOME}/snap/firefox/  -name "cert9.db" 2>/dev/null ||:)
+    do
+      PROFILE_DIR=$(dirname ${PROFILE_DIRS})
+      certutil -F -d ${PROFILE_DIR} -n $BROWSER_CRT_SUBJECT >/dev/null 2>&1 ||:
+      pk12util -i ${BROWSER_PKCS12_FILE} -d ${PROFILE_DIR} -W '' >/dev/null 2>&1
+    done
+    rm -f ${BROWSER_PKCS12_FILE}
+  fi
+}
+
+check_cert() {
+
+  local EXITCODE=0
+  step certificate needs-renewal ${BROWSER_CRT_FILE} --expires-in 0s >/dev/null 2>&1 || EXITCODE=$?
+
+  if [ "${EXITCODE}" -ne 1 ]; then
+    login
+  fi
+
+}
+
+logout () {
+  generate_config
+  export TSS2_LOG=all+NONE,fapi+NONE
+
+  # Remove cert and key from Chrome
+  certutil -F -d sql:$HOME/.pki/nssdb -n $BROWSER_CRT_SUBJECT  >/dev/null 2>&1 ||:
+  pk12util -i ${BROWSER_PKCS12_FILE} -d sql:$HOME/.pki/nssdb -W '' >/dev/null 2>&1
+
+  # Remove cert and key from all Firefox profiles
+  for PROFILE_DIRS in $(find  ${HOME}/.mozilla* ${HOME}/snap/firefox/  -name "cert9.db" 2>/dev/null ||:)
+  do
+    PROFILE_DIR=$(dirname ${PROFILE_DIRS})
+    certutil -F -d ${PROFILE_DIR} -n $BROWSER_CRT_SUBJECT >/dev/null 2>&1 ||:
+  done
+}
+
+display_help () {
+  echo "halp!"
+}
+
+case $1 in
+
+  login)
+    check_context
+    login
+    ;;
+
+  configure)
+    IS_CONFIGURE=true
+    check_context
+    check_config
+    ;;
+
+  export)
+    check_context
+    check_config
+    generate_config
+    check_cert
+    export_config
+    ;;
+
+  help)
+    display_help
+    ;;
+
+  *)
+    echo "Unknown command!"
+    display_help
+    exit 1
+    ;;
+
+esac
