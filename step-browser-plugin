@@ -7,25 +7,31 @@ set -e
 # set -x
 
 : ${STEPPATH:=$HOME/.step}
-BROWSER_CERT_DIR="${STEPPATH}/certs"
+: ${BROWSER_CERT_DIR:=${STEPPATH}/certs}
 
 USERNAME=$(id -un)
 GROUPNAME=$(id -gn)
 
+
 if [[ ! "${STEPPATH}" || ! -d "${STEPPATH}" ]]; then
-  echo "Could not create ${STEPPATH} directory!"
+  echo "STEPPATH ${STEPPATH} directory not found!"
   exit 1
 fi
 
 if [[ ! "${BROWSER_CERT_DIR}" || ! -d "${BROWSER_CERT_DIR}" ]]; then
-  echo "Could not create ${BROWSER_CERT_DIR} directory!"
+  echo "${BROWSER_CERT_DIR} directory not found!"
+  exit 1
+fi
+
+if [[ ! -f "${STEPPATH}/config/defaults.json" ]]; then
+  echo "${STEPPATH}/config/defaults.json not found! Bootstrap your CA!!"
   exit 1
 fi
 
 export STEPPATH
 
 confirm() {
-  read -r -p "${1:-Confirm? [y/N]} " RESPONSE
+  read -r -p "${1:-Confirm: [y/N]} " RESPONSE
   case "${RESPONSE}" in
       [yY][eE][sS]|[yY])
           true
@@ -41,7 +47,7 @@ check_context() {
     BROWSER_CONTEXT=$(step context current)
     mkdir -p ${BROWSER_CERT_DIR}/contexts/${BROWSER_CONTEXT}
     BROWSER_CONFIG_DIR=${BROWSER_CERT_DIR}/contexts/${BROWSER_CONTEXT}
-    BROWSER_CONFIG_FILE=${BROWSER_CERT_DIR}/contexts/${BROWSER_CONTEXT}/config.yml
+    BROWSER_CONFIG_FILE=${BROWSER_CONFIG_DIR}/config.yml
     BROWSER_USE_CONTEXT=true
   else
     BROWSER_CONFIG_DIR=${STEPPATH}/config
@@ -49,7 +55,8 @@ check_context() {
   fi
 }
 
-check_config() {
+configure() {
+  check_context
   if [ ! -f ${BROWSER_CONFIG_FILE} ]; then
     echo "Config file ${BROWSER_CONFIG_FILE} not found! Configuring..."
     create_config
@@ -63,10 +70,10 @@ check_config() {
 }
 
 create_config() {
-  while [[ ! "$EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,4}$ ]];
+  while [[ ! "$EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,8}$ ]];
     do
       read -p "Enter email address: " EMAIL
-      if [[ "$EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,4}$ ]]
+      if [[ "$EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,8}$ ]]
       then
           local EMAIL=${EMAIL}
           break
@@ -103,8 +110,7 @@ create_config() {
   echo
 }
 
-generate_config() {
-
+generate_env() {
   if step context current >/dev/null 2>&1; then
     BROWSER_CONTEXT=$(step context current)
 
@@ -112,10 +118,10 @@ generate_config() {
     BROWSER_CA_PROVISIONER=$(yq .provisioner ${BROWSER_CONFIG_FILE})
     BROWSER_CRT_DURATION=$(yq .duration ${BROWSER_CONFIG_FILE})
 
-    BROWSER_CA_FILE="${BROWSER_CERT_DIR}/contexts/${BROWSER_CONTEXT}/root_ca.crt"
-    BROWSER_CRT_FILE="${BROWSER_CERT_DIR}/contexts/${BROWSER_CONTEXT}/${USERNAME}.crt"
-    BROWSER_KEY_FILE="${BROWSER_CERT_DIR}/contexts/${BROWSER_CONTEXT}/${USERNAME}.key"
-    BROWSER_PKCS12_FILE="${BROWSER_CERT_DIR}/contexts/${BROWSER_CONTEXT}/${USERNAME}.p12"
+    BROWSER_CA_FILE="${BROWSER_CONFIG_DIR}/root_ca.crt"
+    BROWSER_CRT_FILE="${BROWSER_CONFIG_DIR}/${USERNAME}.crt"
+    BROWSER_KEY_FILE="${BROWSER_CONFIG_DIR}/${USERNAME}.key"
+    BROWSER_PKCS12_FILE="${BROWSER_CONFIG_DIR}/${USERNAME}.p12"
     BROWSER_FILE_OWNER=${USERNAME}
     BROWSER_FILE_GROUP=${GROUPNAME}
     BROWSER_FILE_MODE=0600
@@ -140,94 +146,129 @@ generate_config() {
     BROWSER_CA_FINGERPRINT=$(jq -r '.fingerprint' $(step path --base)/config/defaults.json)
     BROWSER_CA_URL=$(jq -r '."ca-url"' $(step path --base)/config/defaults.json)
   fi
-
 }
 
-export_config() {
+export() {
+  check_context
+  configure
+  generate_env
+  check_cert
 
-  cat << EOF > ${BROWSER_CERT_DIR}/cert_file_vars
+  cat << EOF > ${BROWSER_CONFIG_DIR}/cert_file_vars
 BROWSER_CA_FILE=${BROWSER_CA_FILE}
 BROWSER_CRT_FILE=${BROWSER_CRT_FILE}
 BROWSER_KEY_FILE=${BROWSER_KEY_FILE}
 EOF
+  rm -f ${BROWSER_CERT_DIR}/cert_file_vars
+  ln -s ${BROWSER_CONFIG_DIR}/cert_file_vars ${BROWSER_CERT_DIR}/cert_file_vars
   echo ${BROWSER_CERT_DIR}/cert_file_vars
 }
 
-
 login() {
-  check_config
-  generate_config
+  check_context
+  configure
+  generate_env
 
-  local EXITCODE=0
-  step certificate needs-renewal ${BROWSER_CRT_FILE} --expires-in 0s >/dev/null 2>&1 || EXITCODE=$?
+  if [ ${BROWSER_USE_CONTEXT} ]; then
+    step ca root ${BROWSER_CA_FILE} --force --context ${BROWSER_CONTEXT} >/dev/null 2>&1
+    step ca certificate ${BROWSER_CRT_SUBJECT} \
+      ${BROWSER_CRT_FILE} \
+      ${BROWSER_KEY_FILE} \
+      ${BROWSER_SANS} \
+      --provisioner ${BROWSER_CA_PROVISIONER} \
+      --not-after ${BROWSER_CRT_DURATION} \
+      --force \
+      --context ${BROWSER_CONTEXT} >/dev/null 2>&1
+  else
+    step ca certificate ${BROWSER_CRT_SUBJECT} \
+      ${BROWSER_CRT_FILE} \
+      ${BROWSER_KEY_FILE} \
+      ${BROWSER_SANS} \
+      --provisioner ${BROWSER_CA_PROVISIONER} \
+      --not-after ${BROWSER_CRT_DURATION} \
+      --force >/dev/null 2>&1
+  fi
 
-  if [ "${EXITCODE}" -ne 1 ]; then
-    echo ${BROWSER_USE_CONTEXT}
-    if [ ${BROWSER_USE_CONTEXT} ]; then
-      step ca root ${BROWSER_CA_FILE} --force --context ${BROWSER_CONTEXT} >/dev/null 2>&1
-      step ca certificate ${BROWSER_CRT_SUBJECT} \
-        ${BROWSER_CRT_FILE} \
-        ${BROWSER_KEY_FILE} \
-        ${BROWSER_SANS} \
-        --provisioner ${BROWSER_CA_PROVISIONER} \
-        --not-after ${BROWSER_CRT_DURATION} \
-        --force \
-        --context ${BROWSER_CONTEXT} >/dev/null 2>&1
-    else
-      step ca certificate ${BROWSER_CRT_SUBJECT} \
-        ${BROWSER_CRT_FILE} \
-        ${BROWSER_KEY_FILE} \
-        ${BROWSER_SANS} \
-        --provisioner ${BROWSER_CA_PROVISIONER} \
-        --not-after ${BROWSER_CRT_DURATION} \
-        --force >/dev/null 2>&1
-    fi
+  chown ${BROWSER_FILE_OWNER}:${BROWSER_FILE_GROUP} ${BROWSER_CA_FILE} ${BROWSER_CRT_FILE} ${BROWSER_KEY_FILE}
+  chmod ${BROWSER_FILE_MODE} ${BROWSER_CA_FILE} ${BROWSER_CRT_FILE} ${BROWSER_KEY_FILE}
+  step certificate p12 --force --no-password --insecure ${BROWSER_PKCS12_FILE} ${BROWSER_CRT_FILE} ${BROWSER_KEY_FILE} >/dev/null 2>&1
 
-    chown ${BROWSER_FILE_OWNER}:${BROWSER_FILE_GROUP} ${BROWSER_CA_FILE} ${BROWSER_CRT_FILE} ${BROWSER_KEY_FILE}
-    chmod ${BROWSER_FILE_MODE} ${BROWSER_CA_FILE} ${BROWSER_CRT_FILE} ${BROWSER_KEY_FILE}
-    step certificate p12 --force --no-password --insecure ${BROWSER_PKCS12_FILE} ${BROWSER_CRT_FILE} ${BROWSER_KEY_FILE} >/dev/null 2>&1
+  export TSS2_LOG=all+NONE,fapi+NONE
 
-    export TSS2_LOG=all+NONE,fapi+NONE
-    # Import cert and key into Chrome
-    certutil -F -d sql:$HOME/.pki/nssdb -n $BROWSER_CRT_SUBJECT  >/dev/null 2>&1 ||:
+  # Remove old cert and install a new cert
+  if [[ "${OSTYPE}" == "linux-gnu"* ]]; then
+    # Chrome
+    certutil -F -d sql:$HOME/.pki/nssdb -n ${BROWSER_CRT_SUBJECT}  >/dev/null 2>&1 ||:
     pk12util -i ${BROWSER_PKCS12_FILE} -d sql:$HOME/.pki/nssdb -W '' >/dev/null 2>&1
-
-    # Import cert and key into all Firefox profiles
-    for PROFILE_DIRS in $(find  ${HOME}/.mozilla* ${HOME}/snap/firefox/  -name "cert9.db" 2>/dev/null ||:)
+    # Firefox
+    for PROFILE_DIRS in $(find  ${HOME}/.mozilla* ${HOME}/snap/firefox/ -name "cert9.db" 2>/dev/null ||:)
     do
       PROFILE_DIR=$(dirname ${PROFILE_DIRS})
-      certutil -F -d ${PROFILE_DIR} -n $BROWSER_CRT_SUBJECT >/dev/null 2>&1 ||:
+      certutil -F -d ${PROFILE_DIR} -n ${BROWSER_CRT_SUBJECT} >/dev/null 2>&1 ||:
       pk12util -i ${BROWSER_PKCS12_FILE} -d ${PROFILE_DIR} -W '' >/dev/null 2>&1
     done
-    rm -f ${BROWSER_PKCS12_FILE}
+  elif [[ "${OSTYPE}" == "darwin"* ]]; then
+    security delete-certificate -t -c ${BROWSER_CRT_SUBJECT}
+    security import ${BROWSER_PKCS12_FILE} -P '' -T "Google Chrome.app" -T "Firefox.app" -T "Safari.app"
+  else
+    echo "OS ${OSTYPE} not supported!"
+    exit 1
   fi
+  rm -f ${BROWSER_PKCS12_FILE}
 }
 
 check_cert() {
-
   local EXITCODE=0
   step certificate needs-renewal ${BROWSER_CRT_FILE} --expires-in 0s >/dev/null 2>&1 || EXITCODE=$?
-
-  if [ "${EXITCODE}" -ne 1 ]; then
+  if [[ "${EXITCODE}" -ne 1 ]]; then
     login
   fi
-
 }
 
 logout () {
-  generate_config
+  echo "Do you want to logout?"
+  confirm
+  generate_env
+
   export TSS2_LOG=all+NONE,fapi+NONE
 
-  # Remove cert and key from Chrome
-  certutil -F -d sql:$HOME/.pki/nssdb -n $BROWSER_CRT_SUBJECT  >/dev/null 2>&1 ||:
-  pk12util -i ${BROWSER_PKCS12_FILE} -d sql:$HOME/.pki/nssdb -W '' >/dev/null 2>&1
+  # Remove old cert and install a new cert
+  if [[ "${OSTYPE}" == "linux-gnu"* ]]; then
+    # Chrome
+    certutil -F -d sql:$HOME/.pki/nssdb -n ${BROWSER_CRT_SUBJECT}  >/dev/null 2>&1 ||:
+    # Firefox
+    for PROFILE_DIRS in $(find  ${HOME}/.mozilla* ${HOME}/snap/firefox/ -name "cert9.db" 2>/dev/null ||:)
+    do
+      PROFILE_DIR=$(dirname ${PROFILE_DIRS})
+      certutil -F -d ${PROFILE_DIR} -n ${BROWSER_CRT_SUBJECT} >/dev/null 2>&1 ||:
+    done
+  elif [[ "${OSTYPE}" == "darwin"* ]]; then
+    security delete-certificate -t -c ${BROWSER_CRT_SUBJECT}
+  else
+    echo "OS ${OSTYPE} not supported!"
+    exit 1
+  fi
+  rm -f ${BROWSER_CRT_FILE} ${BROWSER_KEY_FILE}
+}
 
-  # Remove cert and key from all Firefox profiles
-  for PROFILE_DIRS in $(find  ${HOME}/.mozilla* ${HOME}/snap/firefox/  -name "cert9.db" 2>/dev/null ||:)
-  do
-    PROFILE_DIR=$(dirname ${PROFILE_DIRS})
-    certutil -F -d ${PROFILE_DIR} -n $BROWSER_CRT_SUBJECT >/dev/null 2>&1 ||:
-  done
+status () {
+  check_context
+  configure
+  generate_env
+
+  if [ -f "${BROWSER_CRT_FILE}" ]; then
+    EXPIRE_DATE=$(step certificate inspect --format json ${BROWSER_CRT_FILE} | jq '.validity.end|fromdate')
+    if [[ "${EXPIRE_DATE}" -gt "$(date +'%s')" ]]; then
+      echo "You are logged in!"
+      echo "Certificate expires $(jq -r --argjson DATE "$EXPIRE_DATE" -n '$DATE |strflocaltime("%Y-%m-%d at %I:%M%p %Z")')"
+      else
+      echo "You are logged out!"
+      echo "Certificate expired $(jq -r --argjson DATE "$EXPIRE_DATE" -n '$DATE |strflocaltime("%Y-%m-%d at %I:%M%p %Z")')"
+    fi
+  else
+    echo "You are logged out!"
+    echo "${BROWSER_CRT_FILE} does not exist."
+  fi
 }
 
 display_help () {
@@ -237,22 +278,24 @@ display_help () {
 case $1 in
 
   login)
-    check_context
     login
+    ;;
+
+  logout)
+    logout
     ;;
 
   configure)
     IS_CONFIGURE=true
-    check_context
-    check_config
+    configure
     ;;
 
   export)
-    check_context
-    check_config
-    generate_config
-    check_cert
-    export_config
+    export
+    ;;
+
+  status)
+    status
     ;;
 
   help)
