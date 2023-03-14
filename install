@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+#
+# Copyright (c) 2023 QuickVM, LLC <foss@quickvm.com> All Rights Reserved.
+
+set -e
+
+: ${STEPPATH:=$HOME/.step}
+
+mkdir -p ${STEPPATH}/plugins/
+
+install -m 0755 -D step-browser-plugin ${STEPPATH}/plugins/
+
+echo ""
+echo "Great job, step-browser-plugin is now installed!"
+echo "Run: step browser configure"
+echo "to get started!"
+echo ""
