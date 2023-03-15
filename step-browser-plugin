@@ -36,21 +36,21 @@ if step context current >/dev/null 2>&1; then
   BROWSER_CONTEXT_DIR="${STEPPATH}/authorities/${BROWSER_CONTEXT}"
   BROWSER_CERTS_DIR="${BROWSER_CONTEXT_DIR}/certs"
   BROWSER_CONFIG_DIR="${BROWSER_CONTEXT_DIR}/config"
-  BROWSER_CONFIG_FILE=${BROWSER_CONFIG_DIR}/config.yml
+  BROWSER_CONFIG_FILE="${BROWSER_CONFIG_DIR}/config.yml"
 else
   BROWSER_CERTS_DIR="${STEPPATH}/certs"
   BROWSER_CONFIG_DIR="${STEPPATH}/config"
   BROWSER_CONFIG_FILE="${BROWSER_CONFIG_DIR}/config.yml"
 fi
 
-
 configure() {
+  generate_ca_env
   if [ ! -f ${BROWSER_CONFIG_FILE} ]; then
-    echo "Config file ${BROWSER_CONFIG_FILE} not found! Configuring..."
+    echo "Config file ${BROWSER_CONFIG_FILE} not found for the ${BROWSER_CA_URL} CA. Configuring..."
     create_config
   else
     if [ ${IS_CONFIGURE} ]; then
-      echo "Config file ${BROWSER_CONFIG_FILE} found! Do you want to reconfigure?"
+      echo "Config file ${BROWSER_CONFIG_FILE} found for the ${BROWSER_CA_URL} CA. Do you want to reconfigure?"
       confirm
       create_config
     fi
@@ -98,11 +98,23 @@ create_config() {
   echo
 }
 
+generate_ca_env(){
+  if step context current >/dev/null 2>&1; then
+    BROWSER_CONTEXT=$(step context current)
+    BROWSER_CRT_SUBJECT="${USERNAME}-${BROWSER_CONTEXT}"
+    BROWSER_CA_FINGERPRINT=$(jq -r '.fingerprint' $(step path --base)/authorities/$(step context current)/config/defaults.json)
+    BROWSER_CA_URL=$(jq -r '."ca-url"' $(step path --base)/authorities/$(step context current)/config/defaults.json)
+  else
+    BROWSER_CRT_SUBJECT="${USERNAME}"
+    BROWSER_CA_FINGERPRINT=$(jq -r '.fingerprint' $(step path --base)/config/defaults.json)
+    BROWSER_CA_URL=$(jq -r '."ca-url"' $(step path --base)/config/defaults.json)
+  fi
+}
+
 generate_env() {
   BROWSER_FILE_OWNER=${USERNAME}
   BROWSER_FILE_GROUP=${GROUPNAME}
   BROWSER_FILE_MODE=0600
-  BROWSER_CRT_SUBJECT=${USERNAME}
   BROWSER_CA_FILE="${BROWSER_CERTS_DIR}/root_ca.crt"
   BROWSER_CRT_FILE="${BROWSER_CERTS_DIR}/${USERNAME}.crt"
   BROWSER_KEY_FILE="${BROWSER_CERTS_DIR}/${USERNAME}.key"
@@ -112,13 +124,22 @@ generate_env() {
   BROWSER_CRT_DURATION=$(yq .duration ${BROWSER_CONFIG_FILE})
   BROWSER_SANS="--san ${BROWSER_EMAIL} --san localhost --san 127.0.0.1 --san ${HOSTNAME}"
 
-  if step context current >/dev/null 2>&1; then
-    BROWSER_CONTEXT=$(step context current)
-    BROWSER_CA_FINGERPRINT=$(jq -r '.fingerprint' $(step path --base)/authorities/$(step context current)/config/defaults.json)
-    BROWSER_CA_URL=$(jq -r '."ca-url"' $(step path --base)/authorities/$(step context current)/config/defaults.json)
-  else
-    BROWSER_CA_FINGERPRINT=$(jq -r '.fingerprint' $(step path --base)/config/defaults.json)
-    BROWSER_CA_URL=$(jq -r '."ca-url"' $(step path --base)/config/defaults.json)
+  generate_ca_env
+}
+
+edit_env_hook() {
+  $EDITOR ${BROWSER_CONFIG_DIR}/env_hook
+}
+
+export_env_hook() {
+  if [[ -f "${BROWSER_CONFIG_DIR}/env_hook" ]]; then
+    grep -v '^#' ${BROWSER_CONFIG_DIR}/env_hook | sed -z '$ s/\n$//' |awk '{print "export "$0}'
+  fi
+}
+
+unset_env_hook() {
+  if [[ -f "${BROWSER_CONFIG_DIR}/env_hook" ]]; then
+    grep -v '^#' ${BROWSER_CONFIG_DIR}/env_hook | sed -z '$ s/\n$//' |awk -F"=" '{print "unset "$1}'
   fi
 }
 
@@ -127,14 +148,18 @@ export_vars_file() {
   generate_env
   check_cert
 
+  ENV_HOOK_EXPORT=$(export_env_hook)
   cat << EOF > ${BROWSER_CONFIG_DIR}/cert_file_vars
-BROWSER_CA_FILE=${BROWSER_CA_FILE}
-BROWSER_CRT_FILE=${BROWSER_CRT_FILE}
-BROWSER_KEY_FILE=${BROWSER_KEY_FILE}
+export BROWSER_CA_FILE=${BROWSER_CA_FILE}
+export BROWSER_CRT_FILE=${BROWSER_CRT_FILE}
+export BROWSER_KEY_FILE=${BROWSER_KEY_FILE}
+${ENV_HOOK_EXPORT}
 EOF
   rm -f ${STEPPATH}/cert_file_vars
-  ln -s ${BROWSER_CONFIG_DIR}/cert_file_vars
-  echo ${STEPPATH}/cert_file_vars
+  ln -s ${BROWSER_CONFIG_DIR}/cert_file_vars ${STEPPATH}/cert_file_vars
+  if [[ ! ${LOGGING_IN} ]]; then
+    cat ${STEPPATH}/cert_file_vars
+  fi
 }
 
 login() {
@@ -186,6 +211,9 @@ login() {
     exit 1
   fi
   rm -f ${BROWSER_PKCS12_FILE}
+  LOGGING_IN=true export_vars_file
+  echo "You are logged in with a certificate from ${BROWSER_CA_URL} CA!"
+  echo "source ${STEPPATH}/cert_file_vars"
 }
 
 check_cert() {
@@ -220,6 +248,7 @@ logout () {
     exit 1
   fi
   rm -f ${BROWSER_CRT_FILE} ${BROWSER_KEY_FILE}
+  unset_env_hook
 }
 
 status () {
@@ -229,14 +258,14 @@ status () {
   if [ -f "${BROWSER_CRT_FILE}" ]; then
     EXPIRE_DATE=$(step certificate inspect --format json ${BROWSER_CRT_FILE} | jq '.validity.end|fromdate')
     if [[ "${EXPIRE_DATE}" -gt "$(date +'%s')" ]]; then
-      echo "You are logged in!"
+      echo "You are logged in with a certificate from ${BROWSER_CA_URL} CA!"
       echo "Certificate expires $(jq -r --argjson DATE "$EXPIRE_DATE" -n '$DATE |strflocaltime("%Y-%m-%d at %I:%M%p %Z")')"
       else
-      echo "You are logged out!"
+      echo "You are logged out! Your last certificate was from CA ${BROWSER_CA_URL}"
       echo "Certificate expired $(jq -r --argjson DATE "$EXPIRE_DATE" -n '$DATE |strflocaltime("%Y-%m-%d at %I:%M%p %Z")')"
     fi
   else
-    echo "You are logged out!"
+    echo "You are logged out of CA ${BROWSER_CA_URL}!"
     echo "${BROWSER_CRT_FILE} does not exist."
   fi
 }
@@ -262,6 +291,14 @@ case $1 in
 
   export)
     export_vars_file
+    ;;
+
+  edit)
+    edit_env_hook
+    ;;
+
+  unset)
+    unset_env_hook
     ;;
 
   status)
