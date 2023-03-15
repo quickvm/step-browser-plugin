@@ -8,11 +8,10 @@ set -e
 : ${STEPPATH:=$HOME/.step}
 
 mkdir -p ${STEPPATH}/plugins/
-
-install -m 0755 -D step-browser-plugin ${STEPPATH}/plugins/
+install -m 0755 step-browser-plugin ${STEPPATH}/plugins/
 
 echo ""
-echo "Great job, step-browser-plugin is now installed!"
-echo "Run: step browser configure"
-echo "to get started!"
+echo "Great job, step-browser-plugin is now installed! To get started run:"
+echo ""
+echo "step browser configure"
 echo ""
