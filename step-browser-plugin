@@ -224,7 +224,7 @@ check_cert() {
   fi
 }
 
-logout () {
+plugin_logout () {
   echo "Do you want to logout?"
   confirm
   generate_env
@@ -271,7 +271,14 @@ status () {
 }
 
 display_help () {
-  echo "halp!"
+  echo "login: initate the login process"
+  echo "logout: remove certs from browsers and unset environment variables for current shell"
+  echo "configure: configure or reconfigure step-browser-plugin in the current context"
+  echo "export: echo current environment variables to stdout"
+  echo "edit: runs $EDITOR ${BROWSER_CONFIG_DIR}/env_hook"
+  echo "unset: unsets unset environment variables for current shell"
+  echo "status: shows the current status of the plugin"
+  echo "help: displays this message"
 }
 
 case $1 in
@@ -281,7 +288,7 @@ case $1 in
     ;;
 
   logout)
-    logout
+    plugin_logout
     ;;
 
   configure)
