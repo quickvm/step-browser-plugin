@@ -197,13 +197,13 @@ login() {
   if [[ "${OSTYPE}" == "linux-gnu"* ]]; then
     # Chrome
     certutil -F -d sql:$HOME/.pki/nssdb -n ${BROWSER_CRT_SUBJECT}  >/dev/null 2>&1 ||:
-    pk12util -i ${BROWSER_PKCS12_FILE} -d sql:$HOME/.pki/nssdb -W '' >/dev/null 2>&1
+    pk12util -i ${BROWSER_PKCS12_FILE} -d sql:$HOME/.pki/nssdb -W temp12 >/dev/null 2>&1
     # Firefox
     for PROFILE_DIRS in $(find  ${HOME}/.mozilla* ${HOME}/snap/firefox/ -name "cert9.db" 2>/dev/null ||:)
     do
       PROFILE_DIR=$(dirname ${PROFILE_DIRS})
       certutil -F -d ${PROFILE_DIR} -n ${BROWSER_CRT_SUBJECT} >/dev/null 2>&1 ||:
-      pk12util -i ${BROWSER_PKCS12_FILE} -d ${PROFILE_DIR} -W '' >/dev/null 2>&1
+      pk12util -i ${BROWSER_PKCS12_FILE} -d ${PROFILE_DIR} -W temp12 >/dev/null 2>&1
     done
   elif [[ "${OSTYPE}" == "darwin"* ]]; then
     security delete-identity -t -Z ${PREVIOUS_FINGERPRINT} >/dev/null 2>&1 ||:
