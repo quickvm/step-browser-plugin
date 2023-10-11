@@ -166,6 +166,8 @@ login() {
   configure
   generate_env
 
+  PREVIOUS_FINGERPRINT=$(step certificate fingerprint ${BROWSER_CRT_FILE})
+
   if [ ${BROWSER_USE_CONTEXT} ]; then
     step ca certificate ${BROWSER_CRT_SUBJECT} \
       ${BROWSER_CRT_FILE} \
@@ -187,7 +189,7 @@ login() {
 
   chown ${BROWSER_FILE_OWNER}:${BROWSER_FILE_GROUP} ${BROWSER_CA_FILE} ${BROWSER_CRT_FILE} ${BROWSER_KEY_FILE}
   chmod ${BROWSER_FILE_MODE} ${BROWSER_CA_FILE} ${BROWSER_CRT_FILE} ${BROWSER_KEY_FILE}
-  step certificate p12 --force --no-password --insecure ${BROWSER_PKCS12_FILE} ${BROWSER_CRT_FILE} ${BROWSER_KEY_FILE} >/dev/null 2>&1
+  step certificate p12 --force --password-file <(echo "temp12")  --insecure ${BROWSER_PKCS12_FILE} ${BROWSER_CRT_FILE} ${BROWSER_KEY_FILE} >/dev/null 2>&1
 
   export TSS2_LOG=all+NONE,fapi+NONE
 
@@ -204,8 +206,8 @@ login() {
       pk12util -i ${BROWSER_PKCS12_FILE} -d ${PROFILE_DIR} -W '' >/dev/null 2>&1
     done
   elif [[ "${OSTYPE}" == "darwin"* ]]; then
-    security delete-certificate -t -c ${BROWSER_CRT_SUBJECT}
-    security import ${BROWSER_PKCS12_FILE} -P '' -T "Google Chrome.app" -T "Firefox.app" -T "Safari.app"
+    security delete-identity -t -Z ${PREVIOUS_FINGERPRINT} >/dev/null 2>&1 ||:
+    security import ${BROWSER_PKCS12_FILE} -P "temp12" -T "/Applications/Google Chrome.app" -T "/Applications/Firefox.app" -T "/Applications/Safari.app"
   else
     echo "OS ${OSTYPE} not supported!"
     exit 1
@@ -242,7 +244,8 @@ plugin_logout () {
       certutil -F -d ${PROFILE_DIR} -n ${BROWSER_CRT_SUBJECT} >/dev/null 2>&1 ||:
     done
   elif [[ "${OSTYPE}" == "darwin"* ]]; then
-    security delete-certificate -t -c ${BROWSER_CRT_SUBJECT}
+    FINGERPRINT=$(step certificate fingerprint ${BROWSER_CRT_FILE})
+    security delete-identity -t -Z ${FINGERPRINT}  >/dev/null 2>&1 ||:
   else
     echo "OS ${OSTYPE} not supported!"
     exit 1

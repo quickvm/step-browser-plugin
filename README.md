@@ -1,6 +1,6 @@
 # step-browser-plugin
 
-The step-browser-plugin automates the usage of TLS certificates for client authentication in Chrome and Firefox browsers on Linux and Google Chrome.app, Firefox.app, Safari.app on MacOS. It also supports CLI applications.
+The step-browser-plugin automates the usage of TLS certificates for client authentication in Chrome and Firefox browsers on Linux and Google Chrome.app, Firefox.app, Safari.app on MacOS. It also supports CLI applications by exporting environment variables to your shell.
 
 ## Install
 
