@@ -166,7 +166,7 @@ login() {
   configure
   generate_env
 
-  PREVIOUS_FINGERPRINT=$(step certificate fingerprint ${BROWSER_CRT_FILE})
+  PREVIOUS_FINGERPRINT=$(step certificate fingerprint ${BROWSER_CRT_FILE} 2>/dev/null ||:)
 
   if [ ${BROWSER_USE_CONTEXT} ]; then
     step ca certificate ${BROWSER_CRT_SUBJECT} \
@@ -207,7 +207,7 @@ login() {
     done
   elif [[ "${OSTYPE}" == "darwin"* ]]; then
     security delete-identity -t -Z ${PREVIOUS_FINGERPRINT} >/dev/null 2>&1 ||:
-    security import ${BROWSER_PKCS12_FILE} -P "temp12" -T "/Applications/Google Chrome.app" -T "/Applications/Firefox.app" -T "/Applications/Safari.app"
+    security import ${BROWSER_PKCS12_FILE} -P "temp12" -T "/Applications/Google Chrome.app" -T "/Applications/Firefox.app" -T "/Applications/Safari.app" >/dev/null 2>&1 ||:
   else
     echo "OS ${OSTYPE} not supported!"
     exit 1
